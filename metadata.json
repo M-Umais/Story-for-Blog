@@ -1,0 +1,6 @@
+{
+  "name": "Reddit Story Maker",
+  "description": "Create engaging multi-page video stories from long Reddit threads with real-time preview and image export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
