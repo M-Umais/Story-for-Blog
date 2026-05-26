@@ -1,6 +1,37 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        try {
+          let currentFetch = window.fetch;
+          if (currentFetch) {
+            const descriptor = {
+              get() {
+                return currentFetch;
+              },
+              set(v) {
+                currentFetch = v;
+              },
+              configurable: true,
+              enumerable: true
+            };
+            try {
+              Object.defineProperty(window, 'fetch', descriptor);
+            } catch (e) {
+              console.warn("Could not patch fetch on window directly, trying prototype...", e);
+              try {
+                Object.defineProperty(Window.prototype, 'fetch', descriptor);
+              } catch (prototypeError) {
+                console.warn("Could not patch fetch on Window.prototype either:", prototypeError);
+              }
+            }
+          }
+        } catch (globalError) {
+          console.warn("Failed to define global fetch wrapper:", globalError);
+        }
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Google AI Studio App</title>

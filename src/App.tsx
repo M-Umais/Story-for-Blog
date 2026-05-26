@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   ChevronRight, 
@@ -17,7 +17,9 @@ import {
   Trash2,
   FileText,
   Image as ImageIcon,
-  Check
+  Check,
+  Highlighter,
+  Eraser
 } from "lucide-react";
 import { toPng } from "html-to-image";
 import JSZip from "jszip";
@@ -28,17 +30,238 @@ interface StoryChunk {
   content: string;
 }
 
+interface Highlight {
+  id: string;
+  text: string;
+  color: string;
+  pageIndex: number;
+}
+
+function renderHighlightedText(text: string, pageHighlights: Array<{ text: string, color: string }>) {
+  if (!pageHighlights || pageHighlights.length === 0) return text;
+
+  // Sort highlights to match longer strings first to avoid substring/nested highlight bugs
+  const sortedHighlights = [...pageHighlights].sort((a, b) => b.text.length - a.text.length);
+
+  interface Interval {
+    start: number;
+    end: number;
+    color: string;
+  }
+  const intervals: Interval[] = [];
+
+  for (const hl of sortedHighlights) {
+    if (!hl.text) continue;
+    
+    // Escape string for RegExp matches safely
+    const escaped = hl.text.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    let match;
+    
+    while ((match = regex.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + hl.text.length;
+      
+      // Check if this interval overlaps with any existing interval we've already matched
+      const overlaps = intervals.some(
+        inv => (start >= inv.start && start < inv.end) || 
+               (end > inv.start && end <= inv.end) || 
+               (inv.start >= start && inv.start < end)
+      );
+      
+      if (!overlaps) {
+        intervals.push({ start, end, color: hl.color });
+      }
+    }
+  }
+
+  if (intervals.length === 0) return text;
+
+  // Sort remaining valid intervals in text order
+  intervals.sort((a, b) => a.start - b.start);
+
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (let i = 0; i < intervals.length; i++) {
+    const inv = intervals[i];
+    if (inv.start > lastIndex) {
+      parts.push(text.substring(lastIndex, inv.start));
+    }
+    
+    const isTextStyle = inv.color.includes("text-") || inv.color.includes("bg-transparent");
+    
+    if (isTextStyle) {
+      parts.push(
+        <span 
+          key={`hl-${i}-${inv.start}`} 
+          className={`${inv.color} select-text transition-colors`}
+        >
+          {text.substring(inv.start, inv.end)}
+        </span>
+      );
+    } else {
+      parts.push(
+        <mark 
+          key={`hl-${i}-${inv.start}`} 
+          className={`${inv.color} text-gray-900 rounded px-1.5 font-semibold text-center select-text selection:bg-orange-100 transition-colors py-0.5 mx-0.5 shadow-sm inline-block`}
+          style={{ WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" }}
+        >
+          {text.substring(inv.start, inv.end)}
+        </mark>
+      );
+    }
+    lastIndex = inv.end;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+
+  return parts;
+}
+
 export default function App() {
   const [storyInput, setStoryInput] = useState("");
   const [commentsInput, setCommentsInput] = useState("");
   const [chunkSize, setChunkSize] = useState(1);
   const [selectedFont, setSelectedFont] = useState("font-serif");
+  const [fontSize, setFontSize] = useState(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_fontSize_v1");
+      return saved ? parseInt(saved, 10) : 24;
+    } catch {
+      return 24;
+    }
+  });
   const [currentPage, setCurrentPage] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_fontSize_v1", fontSize.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [fontSize]);
+
+  const [highlights, setHighlights] = useState<Highlight[]>(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_highlights_v1");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [activeSelection, setActiveSelection] = useState<{
+    text: string;
+    pageIndex: number;
+    rect: { top: number; left: number; width: number } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_highlights_v1", JSON.stringify(highlights));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [highlights]);
+
+  const handleTextSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      setActiveSelection(null);
+      return;
+    }
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) {
+      setActiveSelection(null);
+      return;
+    }
+
+    // Determine if selection is within a preview page
+    let node: Node | null = selection.anchorNode;
+    let pageIndex: number | null = null;
+
+    while (node && node !== document.body) {
+      if (node instanceof HTMLElement && node.hasAttribute("data-page-index")) {
+        pageIndex = parseInt(node.getAttribute("data-page-index") || "0", 10);
+        break;
+      }
+      node = node.parentNode;
+    }
+
+    if (pageIndex !== null) {
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const container = document.getElementById("preview-scroll-container");
+      
+      if (container) {
+        const containerRect = container.getBoundingClientRect();
+        // Calculate position relative to container
+        const top = rect.top - containerRect.top + container.scrollTop;
+        const left = rect.left - containerRect.left + container.scrollLeft;
+        
+        setActiveSelection({
+          text: selectedText,
+          pageIndex,
+          rect: {
+            top,
+            left,
+            width: rect.width
+          }
+        });
+      }
+    } else {
+      setActiveSelection(null);
+    }
+  };
+
+  const addHighlight = (colorClass: string) => {
+    if (!activeSelection) return;
+    const { text, pageIndex } = activeSelection;
+
+    const newHighlight: Highlight = {
+      id: `hl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      text,
+      color: colorClass,
+      pageIndex
+    };
+
+    setHighlights((prev) => {
+      // Find if an identical highlight exists on this page
+      const exists = prev.some(h => h.pageIndex === pageIndex && h.text.toLowerCase() === text.toLowerCase());
+      if (exists) {
+        return prev.map(h => (h.pageIndex === pageIndex && h.text.toLowerCase() === text.toLowerCase()) ? { ...h, color: colorClass } : h);
+      }
+      return [...prev, newHighlight];
+    });
+
+    window.getSelection()?.removeAllRanges();
+    setActiveSelection(null);
+  };
+
+  const removeHighlightForSelection = () => {
+    if (!activeSelection) return;
+    const { text, pageIndex } = activeSelection;
+
+    setHighlights((prev) => {
+      // Remove any highlights on this page that overlap or match the selected text
+      return prev.filter(h => !(h.pageIndex === pageIndex && (
+        h.text.toLowerCase().includes(text.toLowerCase()) || 
+        text.toLowerCase().includes(h.text.toLowerCase())
+      )));
+    });
+
+    window.getSelection()?.removeAllRanges();
+    setActiveSelection(null);
+  };
 
   // Split story and comments into chunks
   const chunks = useMemo(() => {
@@ -257,8 +480,97 @@ export default function App() {
              </div>
           </div>
 
+          <div className="space-y-2 border-t border-gray-100 pt-4">
+             <div className="flex items-center justify-between">
+                <label className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                   Customize Font Size
+                </label>
+                <span className="text-xs font-mono font-extrabold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">{fontSize}px</span>
+             </div>
+             <div className="flex items-center gap-3 bg-gray-50 p-2 rounded-lg border border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setFontSize(prev => Math.max(14, prev - 1))}
+                  className="w-8 h-8 flex items-center justify-center bg-white hover:bg-gray-100 border border-gray-200 rounded-lg text-xs font-bold text-gray-600 cursor-pointer transition-all active:scale-90 hover:border-gray-300 shadow-2xs select-none"
+                  title="Decrease Font Size"
+                >
+                  A-
+                </button>
+                <input 
+                  type="range" 
+                  min="14" 
+                  max="48" 
+                  value={fontSize} 
+                  onChange={(e) => setFontSize(parseInt(e.target.value))}
+                  className="flex-1 accent-orange-600 cursor-pointer"
+                />
+                <button
+                  type="button"
+                  onClick={() => setFontSize(prev => Math.min(48, prev + 1))}
+                  className="w-8 h-8 flex items-center justify-center bg-white hover:bg-gray-100 border border-gray-200 rounded-lg text-xs font-bold text-gray-600 cursor-pointer transition-all active:scale-90 hover:border-gray-300 shadow-2xs select-none"
+                  title="Increase Font Size"
+                >
+                  A+
+                </button>
+             </div>
+          </div>
+
+          {/* Highlights Manager */}
+          <div className="space-y-2 border-t border-gray-100 pt-5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                <Highlighter size={13} className="text-orange-500" /> Story Highlights
+              </label>
+              {highlights.length > 0 && (
+                <button
+                  onClick={() => setHighlights([])}
+                  className="text-[10px] uppercase tracking-wider font-bold text-red-500 hover:text-red-700 transition-colors cursor-pointer"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
+            
+            {highlights.length === 0 ? (
+              <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-center text-xs text-gray-400 leading-relaxed font-normal">
+                Highlight key details: select any words directly on the preview pages to highlight them!
+              </div>
+            ) : (
+              <div className="bg-gray-50 border border-gray-100 rounded-xl p-2 max-h-48 overflow-y-auto space-y-1">
+                {highlights.map((hl) => {
+                  const hlIndicatorBg = hl.color.includes("text-[#e17b35]")
+                    ? "bg-[#e17b35]"
+                    : hl.color.includes("text-amber-500")
+                    ? "bg-amber-400"
+                    : hl.color.includes("text-emerald-500")
+                    ? "bg-emerald-500"
+                    : hl.color;
+
+                  return (
+                    <div 
+                      key={hl.id} 
+                      className="flex items-center justify-between text-xs bg-white border border-gray-100/80 p-2 rounded-lg shadow-2xs group/hl"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${hlIndicatorBg} border border-black/10`} />
+                        <span className="text-[10px] font-bold text-gray-400 font-mono flex-shrink-0">Page {hl.pageIndex + 1}</span>
+                        <span className="truncate font-medium text-gray-700 italic">"{hl.text}"</span>
+                      </div>
+                      <button
+                        onClick={() => setHighlights((prev) => prev.filter(h => h.id !== hl.id))}
+                        className="text-gray-400 hover:text-red-500 p-1 rounded transition-colors cursor-pointer flex-shrink-0"
+                        title="Delete highlight"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-gray-400">Quick Stats</label>
             <div className="grid grid-cols-2 gap-4">
                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100 text-center">
                   <div className="text-xs text-gray-400 uppercase">Pages</div>
@@ -352,7 +664,12 @@ export default function App() {
            </div>
         </div>
 
-        <div className="flex-1 p-8 md:p-12 overflow-y-auto pt-20">
+        <div 
+          id="preview-scroll-container"
+          className="flex-1 p-8 md:p-12 overflow-y-auto pt-20 relative select-text"
+          onMouseUp={handleTextSelection}
+          onKeyUp={handleTextSelection}
+        >
           <AnimatePresence mode="wait">
             {generatedImages.length > 0 ? (
               <motion.div 
@@ -388,19 +705,23 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="max-w-xl mx-auto space-y-6 pb-20"
+                className="max-w-xl mx-auto space-y-6 pb-20 select-text"
               >
                 {chunks.map((chunk, index) => (
                   <motion.div
                     key={chunk.id}
                     id={`preview-page-${index}`}
+                    data-page-index={index}
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
-                    className={`w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100`}
+                    className="w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative"
                   >
-                    <p className={`text-xl md:text-2xl text-gray-900 leading-[1.6] text-left ${selectedFont}`}>
-                      {chunk.content}
+                    <p 
+                      className={`text-gray-900 leading-[1.6] text-left ${selectedFont} select-text`}
+                      style={{ fontSize: `${fontSize}px` }}
+                    >
+                      {renderHighlightedText(chunk.content, highlights.filter(h => h.pageIndex === index))}
                     </p>
                   </motion.div>
                 ))}
@@ -416,6 +737,54 @@ export default function App() {
                     <FileText size={40} />
                  </div>
                  <p className="text-gray-400 font-medium">Your preview will appear here...</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Floating Highlight Toolbar */}
+          <AnimatePresence>
+            {activeSelection && activeSelection.rect && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="absolute z-50 bg-[#1a1a1b] text-white rounded-xl shadow-2xl p-2.5 flex items-center gap-2 border border-gray-700/50 backdrop-blur-md"
+                style={{
+                  top: `${activeSelection.rect.top - 65}px`,
+                  left: `${activeSelection.rect.left + activeSelection.rect.width / 2}px`,
+                  transform: "translateX(-50%)",
+                }}
+              >
+                <div className="flex gap-2 px-1.5 border-r border-gray-800 pr-2.5">
+                  {[
+                    { label: "Shorts Orange (Screenshot Style)", class: "text-[#e17b35] font-black bg-transparent", btnStyle: "bg-[#e17b35] border border-white/20" },
+                    { label: "Shorts Yellow (Bold)", class: "text-amber-500 font-black bg-transparent", btnStyle: "bg-amber-400 border border-white/20" },
+                    { label: "Shorts Green (Bold)", class: "text-emerald-500 font-black bg-transparent", btnStyle: "bg-emerald-500 border border-white/20" },
+                    { label: "Classic Yellow Highlight", class: "bg-[#fef08a]", btnStyle: "bg-[#fef08a]" },
+                    { label: "Classic Pink Highlight", class: "bg-[#fbcfe8]", btnStyle: "bg-[#fbcfe8]" },
+                    { label: "Classic Green Highlight", class: "bg-[#bbf7d0]", btnStyle: "bg-[#bbf7d0]" },
+                  ].map((color) => (
+                    <button
+                      key={color.label}
+                      title={color.label}
+                      onClick={() => addHighlight(color.class)}
+                      className={`w-6 h-6 rounded-full ${color.btnStyle} hover:scale-125 transition-all cursor-pointer flex items-center justify-center`}
+                    >
+                      {color.class.includes("text-") && (
+                        <span className="text-[10px] font-bold text-white drop-shadow-md leading-none select-none">T</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={removeHighlightForSelection}
+                  title="Remove Highlight"
+                  className="p-1.5 hover:bg-gray-800 rounded-lg text-red-400 hover:text-red-300 transition-colors cursor-pointer flex items-center gap-1.5 text-xs px-2"
+                >
+                  <Eraser size={13} />
+                  <span className="font-semibold select-none">Remove Highlight</span>
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
