@@ -19,7 +19,8 @@ import {
   Image as ImageIcon,
   Check,
   Highlighter,
-  Eraser
+  Eraser,
+  Bold
 } from "lucide-react";
 import { toPng } from "html-to-image";
 import JSZip from "jszip";
@@ -35,6 +36,31 @@ interface Highlight {
   text: string;
   color: string;
   pageIndex: number;
+}
+
+function getInlineFontFamily(fontClass: string): string {
+  switch (fontClass) {
+    case "font-inter":
+      return '"Inter", "Helvetica Neue", Arial, sans-serif';
+    case "font-roboto":
+      return '"Roboto", "Helvetica Neue", Arial, sans-serif';
+    case "font-lato":
+      return '"Lato", "Helvetica Neue", Arial, sans-serif';
+    case "font-poppins":
+      return '"Poppins", sans-serif';
+    case "font-serif":
+      return 'Georgia, Cambria, "Times New Roman", Times, serif';
+    case "font-playfair":
+      return '"Playfair Display", Georgia, serif';
+    case "font-lora":
+      return '"Lora", Georgia, serif';
+    case "font-bebas":
+      return '"Bebas Neue", Impact, sans-serif';
+    case "font-mono":
+      return '"JetBrains Mono", Courier New, monospace';
+    default:
+      return 'serif';
+  }
 }
 
 function renderHighlightedText(text: string, pageHighlights: Array<{ text: string, color: string }>) {
@@ -125,10 +151,25 @@ export default function App() {
   const [storyInput, setStoryInput] = useState("");
   const [commentsInput, setCommentsInput] = useState("");
   const [chunkSize, setChunkSize] = useState(1);
-  const [selectedFont, setSelectedFont] = useState("font-serif");
+  const [selectedFont, setSelectedFont] = useState(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_selectedFont_v2");
+      return saved || "font-serif";
+    } catch {
+      return "font-serif";
+    }
+  });
+  const [isBold, setIsBold] = useState(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_isBold_v2");
+      return saved === "true";
+    } catch {
+      return false;
+    }
+  });
   const [fontSize, setFontSize] = useState(() => {
     try {
-      const saved = localStorage.getItem("reddit_story_fontSize_v1");
+      const saved = localStorage.getItem("reddit_story_fontSize_v2");
       return saved ? parseInt(saved, 10) : 24;
     } catch {
       return 24;
@@ -137,17 +178,35 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState({ current: 0, total: 0 });
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+  const [activeView, setActiveView] = useState<"live" | "images">("live");
   const [copied, setCopied] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
-      localStorage.setItem("reddit_story_fontSize_v1", fontSize.toString());
+      localStorage.setItem("reddit_story_fontSize_v2", fontSize.toString());
     } catch (e) {
       console.error(e);
     }
   }, [fontSize]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_selectedFont_v2", selectedFont);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [selectedFont]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_isBold_v2", isBold.toString());
+    } catch (e) {
+      console.error(e);
+    }
+  }, [isBold]);
 
   const [highlights, setHighlights] = useState<Highlight[]>(() => {
     try {
@@ -267,6 +326,7 @@ export default function App() {
   const chunks = useMemo(() => {
     const now = Date.now();
     setGeneratedImages([]); // Reset images when chunks change
+    setActiveView("live");
     
     // Process story: split by sentence boundaries AND line breaks
     const processStory = (text: string) => {
@@ -313,31 +373,28 @@ export default function App() {
   const generateImages = async () => {
     if (chunks.length === 0) return;
     setIsGenerating(true);
+    setGenerationProgress({ current: 0, total: chunks.length });
     setGeneratedImages([]);
-    const images: string[] = [];
 
     try {
-      console.log("Starting image generation...");
-      // Step 1: Wait for any pending renders and fonts
+      console.log("Starting optimized parallel image generation...");
+      // Step 1: Wait for any pending renders and browser fonts to be ready
       await document.fonts.ready;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 100)); // Minimal prep delay for stable rendering layout
 
-      for (let i = 0; i < chunks.length; i++) {
+      // Process elements asynchronously and concurrently to maximize performance
+      const capturePromises = chunks.map(async (_, i) => {
         const element = document.getElementById(`preview-page-${i}`);
         if (!element) {
           console.warn(`Element preview-page-${i} not found`);
-          continue;
+          setGenerationProgress(prev => ({ ...prev, current: prev.current + 1 }));
+          return { dataUrl: "", index: i };
         }
 
-        // Scroll into view to ensure it's "real"
-        element.scrollIntoView({ block: "center" });
-        await new Promise(r => setTimeout(r, 200));
-
         try {
-          console.log(`Capturing page ${i+1}...`);
-          // Use html-to-image toPng
+          // Use html-to-image toPng with same-origin font styles
           const dataUrl = await toPng(element, {
-            quality: 1,
+            quality: 1.0,
             pixelRatio: 2,
             backgroundColor: "#f9f9f9",
             style: {
@@ -346,23 +403,44 @@ export default function App() {
               opacity: "1",
               display: "block"
             },
-            // skipFonts: true is a key suspect to fix the window.fetch override error
-            skipFonts: true,
-          });
-          
-          if (dataUrl && dataUrl.length > 100) {
-            images.push(dataUrl);
-            console.log(`Page ${i+1} captured successfully`);
-          } else {
-            console.warn(`Page ${i+1} capture produced empty image`);
-          }
+            skipFonts: false,
+            styleSheetsFilter: (styleSheet: any) => {
+              try {
+                if (!styleSheet.href) {
+                  return true; // Inline stylesheets are safe
+                }
+                const url = styleSheet.href;
+                // Allow same-origin stylesheets to prevent browser extension or third-party CORS issues
+                return url.startsWith(window.location.origin) || url.startsWith("/");
+              } catch (e) {
+                // Safely return false if accessing any cross-origin stylesheet raises a security/CORS access exception
+                return false;
+              }
+            }
+          } as any);
+
+          // Update real-time progress counter
+          setGenerationProgress(prev => ({ ...prev, current: prev.current + 1 }));
+          return { dataUrl, index: i };
         } catch (pageError) {
           console.error(`Page ${i} capture failed:`, pageError);
+          setGenerationProgress(prev => ({ ...prev, current: prev.current + 1 }));
+          return { dataUrl: "", index: i };
         }
-      }
+      });
+
+      // Wait for all rendering tasks to complete in parallel
+      const results = await Promise.all(capturePromises);
       
-      if (images.length > 0) {
-        setGeneratedImages(images);
+      // Sort to preserve original pagination/ordering sequence
+      const sortedImages = results
+        .sort((a, b) => a.index - b.index)
+        .map(r => r.dataUrl)
+        .filter(url => url && url.length > 100);
+      
+      if (sortedImages.length > 0) {
+        setGeneratedImages(sortedImages);
+        setActiveView("images");
       }
     } catch (error) {
       console.error("Overall generation failed:", error);
@@ -468,9 +546,12 @@ export default function App() {
                 <select 
                   value={selectedFont} 
                   onChange={(e) => setSelectedFont(e.target.value)}
-                  className="w-full bg-gray-50 p-2 rounded-lg border border-gray-100 text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500"
+                  className="w-full bg-gray-50 p-2 rounded-lg border border-gray-100 text-sm font-medium outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer"
                 >
-                  <option value="font-inter">Modern Sans</option>
+                  <option value="font-inter">Modern Sans (Inter)</option>
+                  <option value="font-roboto">Clean Sans (Roboto)</option>
+                  <option value="font-lato">Friendly Sans (Lato)</option>
+                  <option value="font-poppins">Geometric Sans (Poppins)</option>
                   <option value="font-serif">Classic Serif</option>
                   <option value="font-playfair">Elegant Playfair</option>
                   <option value="font-lora">Refined Lora</option>
@@ -483,9 +564,24 @@ export default function App() {
           <div className="space-y-2 border-t border-gray-100 pt-4">
              <div className="flex items-center justify-between">
                 <label className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-                   Customize Font Size
+                   Customize Sizing & Weight
                 </label>
-                <span className="text-xs font-mono font-extrabold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">{fontSize}px</span>
+                <div className="flex items-center gap-2">
+                   <button
+                     type="button"
+                     onClick={() => setIsBold((prev) => !prev)}
+                     className={`px-3 py-1 text-xs font-bold rounded-lg border flex items-center gap-1.5 cursor-pointer transition-all ${
+                       isBold 
+                       ? "bg-orange-600 text-white border-orange-600 hover:bg-orange-700 shadow-xs" 
+                       : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50 hover:border-gray-300"
+                     }`}
+                     title="Toggle Bold Text"
+                   >
+                     <Bold size={12} className={isBold ? "stroke-[3px]" : "stroke-[2.5px]"} />
+                     <span>Bold</span>
+                   </button>
+                   <span className="text-xs font-mono font-extrabold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">{fontSize}px</span>
+                </div>
              </div>
              <div className="flex items-center gap-3 bg-gray-50 p-2 rounded-lg border border-gray-100">
                 <button
@@ -602,7 +698,7 @@ export default function App() {
              {isGenerating ? (
                <>
                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                 <span>Capturing {chunks.length} Pages...</span>
+                 <span>Capturing Page {generationProgress.current} of {generationProgress.total}...</span>
                </>
              ) : (
                <>
@@ -641,21 +737,50 @@ export default function App() {
         <div className="absolute top-0 w-full p-4 flex justify-between items-center z-10 bg-white border-b border-gray-100">
            <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-gray-400 uppercase tracking-[0.2em]">
-                {generatedImages.length > 0 ? "Final Image Results" : "Live Preview"}
+                {activeView === "images" ? "Captured Images" : "Live Preview"}
               </span>
               {generatedImages.length > 0 && (
-                <span className="flex items-center gap-1 text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100">
-                  <Check size={10} /> Captured
+                <span className="flex items-center gap-1 text-[10px] font-bold bg-green-50 text-green-600 px-2 py-0.5 rounded-full border border-green-100 animate-pulse animate-duration-1000">
+                  <Check size={10} /> Ready to Download
                 </span>
               )}
            </div>
            <div className="flex items-center gap-3">
               {generatedImages.length > 0 && (
+                <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl border border-gray-200/60 shadow-2xs">
+                  <button
+                    onClick={() => setActiveView("live")}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer select-none ${
+                      activeView === "live"
+                        ? "bg-white text-orange-600 shadow-xs border border-gray-200/50"
+                        : "text-gray-500 hover:text-gray-800"
+                    }`}
+                  >
+                    Live Screen
+                  </button>
+                  <button
+                    onClick={() => setActiveView("images")}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer select-none ${
+                      activeView === "images"
+                        ? "bg-white text-orange-600 shadow-xs border border-gray-200/50"
+                        : "text-gray-500 hover:text-gray-800"
+                    }`}
+                    title="View the generated PNG screenshots"
+                  >
+                    Captured PNGs ({generatedImages.length})
+                  </button>
+                </div>
+              )}
+              {generatedImages.length > 0 && (
                 <button 
-                  onClick={() => setGeneratedImages([])}
-                  className="text-xs font-bold text-orange-600 hover:text-orange-700 transition-colors"
+                  onClick={() => {
+                    setGeneratedImages([]);
+                    setActiveView("live");
+                  }}
+                  className="text-xs font-bold text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+                  title="Clear generated images and return to editing"
                 >
-                  Edit Blocks
+                  Clear Results
                 </button>
               )}
               <span className="text-sm font-mono font-bold text-gray-400 bg-gray-50 px-3 py-1 rounded-full border border-gray-100">
@@ -671,7 +796,7 @@ export default function App() {
           onKeyUp={handleTextSelection}
         >
           <AnimatePresence mode="wait">
-            {generatedImages.length > 0 ? (
+            {activeView === "images" && generatedImages.length > 0 ? (
               <motion.div 
                 key="gallery"
                 initial={{ opacity: 0 }}
@@ -718,8 +843,12 @@ export default function App() {
                     className="w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative"
                   >
                     <p 
-                      className={`text-gray-900 leading-[1.6] text-left ${selectedFont} select-text`}
-                      style={{ fontSize: `${fontSize}px` }}
+                      className={`text-gray-900 leading-[1.6] text-left ${selectedFont} ${isBold ? "font-bold" : "font-normal"} select-text`}
+                      style={{ 
+                        fontSize: `${fontSize}px`,
+                        fontFamily: getInlineFontFamily(selectedFont),
+                        fontWeight: isBold ? 700 : 400
+                      }}
                     >
                       {renderHighlightedText(chunk.content, highlights.filter(h => h.pageIndex === index))}
                     </p>
