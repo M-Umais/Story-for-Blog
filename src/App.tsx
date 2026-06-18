@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect, useMemo, ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, ReactNode, CSSProperties } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   ChevronRight, 
@@ -63,7 +63,59 @@ function getInlineFontFamily(fontClass: string): string {
   }
 }
 
-function renderHighlightedText(text: string, pageHighlights: Array<{ text: string, color: string }>) {
+function getHighlightStyles(colorClass: string, isBold: boolean): { 
+  style: CSSProperties; 
+  className: string; 
+  isText: boolean; 
+} {
+  const isCustomBg = colorClass.startsWith("bg-custom:");
+  const isCustomText = colorClass.startsWith("text-custom:");
+  const isStandardText = colorClass.includes("text-") || colorClass.includes("bg-transparent");
+  const isText = isCustomBg ? false : (isCustomText || isStandardText);
+
+  // Default font weight ensures no automatic bold styling is applied. It is strictly normal weight (400) unless bold is toggled.
+  const style: CSSProperties = {
+    fontWeight: isBold ? 700 : 400
+  };
+
+  if (isText) {
+    if (isCustomText) {
+      style.color = colorClass.replace("text-custom:", "");
+    } else {
+      const match = colorClass.match(/text-\[([^\]]+)\]/);
+      if (match) {
+        style.color = match[1];
+      }
+    }
+    style.backgroundColor = "transparent";
+    return {
+      style,
+      className: isCustomText ? "" : colorClass,
+      isText: true
+    };
+  } else {
+    style.WebkitPrintColorAdjust = "exact";
+    style.printColorAdjust = "exact";
+    
+    if (isCustomBg) {
+      style.backgroundColor = colorClass.replace("bg-custom:", "");
+    } else {
+      const match = colorClass.match(/bg-\[([^\]]+)\]/);
+      if (match) {
+        style.backgroundColor = match[1];
+      }
+    }
+    return {
+      style,
+      className: isCustomBg 
+        ? "text-gray-900 rounded px-1.5 text-center select-text transition-colors py-0.5 mx-0.5 shadow-2xs inline-block" 
+        : `${colorClass} text-gray-900 rounded px-1.5 text-center select-text transition-colors py-0.5 mx-0.5 shadow-2xs inline-block`,
+      isText: false
+    };
+  }
+}
+
+function renderHighlightedText(text: string, pageHighlights: Array<{ text: string, color: string }>, isBold: boolean) {
   if (!pageHighlights || pageHighlights.length === 0) return text;
 
   // Sort highlights to match longer strings first to avoid substring/nested highlight bugs
@@ -115,13 +167,14 @@ function renderHighlightedText(text: string, pageHighlights: Array<{ text: strin
       parts.push(text.substring(lastIndex, inv.start));
     }
     
-    const isTextStyle = inv.color.includes("text-") || inv.color.includes("bg-transparent");
-    
-    if (isTextStyle) {
+    const { style, className, isText } = getHighlightStyles(inv.color, isBold);
+
+    if (isText) {
       parts.push(
         <span 
           key={`hl-${i}-${inv.start}`} 
-          className={`${inv.color} select-text transition-colors`}
+          className={className}
+          style={style}
         >
           {text.substring(inv.start, inv.end)}
         </span>
@@ -130,8 +183,8 @@ function renderHighlightedText(text: string, pageHighlights: Array<{ text: strin
       parts.push(
         <mark 
           key={`hl-${i}-${inv.start}`} 
-          className={`${inv.color} text-gray-900 rounded px-1.5 font-semibold text-center select-text selection:bg-orange-100 transition-colors py-0.5 mx-0.5 shadow-sm inline-block`}
-          style={{ WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" }}
+          className={className}
+          style={style}
         >
           {text.substring(inv.start, inv.end)}
         </mark>
@@ -222,6 +275,26 @@ export default function App() {
     pageIndex: number;
     rect: { top: number; left: number; width: number } | null;
   } | null>(null);
+
+  const [customColor, setCustomColor] = useState("#ff4500");
+  const [customColorType, setCustomColorType] = useState<"bg" | "text">("bg");
+
+  const [pageBoldOverrides, setPageBoldOverrides] = useState<Record<number, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_page_bold_v2");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_page_bold_v2", JSON.stringify(pageBoldOverrides));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [pageBoldOverrides]);
 
   useEffect(() => {
     try {
@@ -407,13 +480,13 @@ export default function App() {
             styleSheetsFilter: (styleSheet: any) => {
               try {
                 if (!styleSheet.href) {
-                  return true; // Inline stylesheets are safe
+                  return false; // Safely ignore style tags / inline stylesheets which might contain oklch()
                 }
                 const url = styleSheet.href;
-                // Allow same-origin stylesheets to prevent browser extension or third-party CORS issues
-                return url.startsWith(window.location.origin) || url.startsWith("/");
+                // ONLY allow our clean localized font definitions to be loaded!
+                // This completely prevents any oklch() parsing crash from other CSS files!
+                return url.includes("fonts.css");
               } catch (e) {
-                // Safely return false if accessing any cross-origin stylesheet raises a security/CORS access exception
                 return false;
               }
             }
@@ -830,30 +903,94 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="max-w-xl mx-auto space-y-6 pb-20 select-text"
+                className="max-w-xl mx-auto space-y-10 pb-20 select-text"
               >
-                {chunks.map((chunk, index) => (
-                  <motion.div
-                    key={chunk.id}
-                    id={`preview-page-${index}`}
-                    data-page-index={index}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative"
-                  >
-                    <p 
-                      className={`text-gray-900 leading-[1.6] text-left ${selectedFont} ${isBold ? "font-bold" : "font-normal"} select-text`}
-                      style={{ 
-                        fontSize: `${fontSize}px`,
-                        fontFamily: getInlineFontFamily(selectedFont),
-                        fontWeight: isBold ? 700 : 400
-                      }}
-                    >
-                      {renderHighlightedText(chunk.content, highlights.filter(h => h.pageIndex === index))}
-                    </p>
-                  </motion.div>
-                ))}
+                {chunks.map((chunk, index) => {
+                  const isPageBold = pageBoldOverrides[index] !== undefined 
+                    ? pageBoldOverrides[index] 
+                    : isBold;
+
+                  return (
+                    <div key={chunk.id} className="space-y-2.5 border border-gray-100/80 rounded-2xl p-4 bg-gray-50/50">
+                      {/* Page-Specific Action Toolbar (Outside screen capture element so it won't be in export pictures) */}
+                      <div className="flex items-center justify-between px-1 select-none">
+                        <span className="text-[10px] font-mono font-bold text-gray-500 bg-white border border-gray-200/60 rounded-md px-2 py-0.5 shadow-2xs">
+                          Page {index + 1}
+                        </span>
+                        
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPageBoldOverrides(prev => ({
+                                ...prev,
+                                [index]: !isPageBold
+                              }));
+                            }}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                              isPageBold
+                                ? "bg-orange-600 text-white border-orange-600 hover:bg-orange-700 shadow-3xs"
+                                : "bg-white text-gray-500 border-gray-200 hover:text-gray-700 hover:bg-gray-100"
+                            }`}
+                            title="Format this page in bold"
+                          >
+                            <Bold size={10} className={isPageBold ? "stroke-[3px]" : "stroke-[2.5px]"} />
+                            <span>{isPageBold ? "Page Bold: ON" : "Page Bold: OFF"}</span>
+                          </button>
+                          
+                          {pageBoldOverrides[index] !== undefined && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPageBoldOverrides(prev => {
+                                  const updated = { ...prev };
+                                  delete updated[index];
+                                  return updated;
+                                });
+                              }}
+                              className="text-[9px] text-gray-400 hover:text-red-500 underline transition-colors cursor-pointer"
+                              title="Reset page bold settings to match default global toggle weight"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Actual Captured Page Card */}
+                      <motion.div
+                        id={`preview-page-${index}`}
+                        data-page-index={index}
+                        className="w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative shadow-xs"
+                        style={{
+                          backgroundColor: "#f9f9f9",
+                          padding: "2.5rem",
+                          border: "1px solid #f3f4f6",
+                          borderRadius: "0.5rem",
+                          boxSizing: "border-box",
+                          width: "100%",
+                          display: "block"
+                        }}
+                      >
+                        <p 
+                          className={`text-gray-900 leading-[1.6] text-left ${selectedFont} ${isPageBold ? "font-bold" : "font-normal"} select-text`}
+                          style={{ 
+                            fontSize: `${fontSize}px`,
+                            fontFamily: getInlineFontFamily(selectedFont),
+                            fontWeight: isPageBold ? 700 : 400,
+                            lineHeight: "1.6",
+                            textAlign: "left",
+                            color: "#111827",
+                            width: "100%",
+                            margin: 0
+                          }}
+                        >
+                          {renderHighlightedText(chunk.content, highlights.filter(h => h.pageIndex === index), isPageBold)}
+                        </p>
+                      </motion.div>
+                    </div>
+                  );
+                })}
               </motion.div>
             ) : (
               <motion.div 
@@ -877,43 +1014,143 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.9, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9 }}
-                className="absolute z-50 bg-[#1a1a1b] text-white rounded-xl shadow-2xl p-2.5 flex items-center gap-2 border border-gray-700/50 backdrop-blur-md"
+                className="absolute z-50 bg-[#141416]/95 text-white rounded-2xl shadow-2xl p-4 flex flex-col gap-3.5 border border-gray-800/80 backdrop-blur-md w-[320px]"
                 style={{
-                  top: `${activeSelection.rect.top - 65}px`,
+                  top: `${Math.max(10, activeSelection.rect.top - 230)}px`,
                   left: `${activeSelection.rect.left + activeSelection.rect.width / 2}px`,
                   transform: "translateX(-50%)",
                 }}
               >
-                <div className="flex gap-2 px-1.5 border-r border-gray-800 pr-2.5">
-                  {[
-                    { label: "Shorts Orange (Screenshot Style)", class: "text-[#e17b35] font-black bg-transparent", btnStyle: "bg-[#e17b35] border border-white/20" },
-                    { label: "Shorts Yellow (Bold)", class: "text-amber-500 font-black bg-transparent", btnStyle: "bg-amber-400 border border-white/20" },
-                    { label: "Shorts Green (Bold)", class: "text-emerald-500 font-black bg-transparent", btnStyle: "bg-emerald-500 border border-white/20" },
-                    { label: "Classic Yellow Highlight", class: "bg-[#fef08a]", btnStyle: "bg-[#fef08a]" },
-                    { label: "Classic Pink Highlight", class: "bg-[#fbcfe8]", btnStyle: "bg-[#fbcfe8]" },
-                    { label: "Classic Green Highlight", class: "bg-[#bbf7d0]", btnStyle: "bg-[#bbf7d0]" },
-                  ].map((color) => (
-                    <button
-                      key={color.label}
-                      title={color.label}
-                      onClick={() => addHighlight(color.class)}
-                      className={`w-6 h-6 rounded-full ${color.btnStyle} hover:scale-125 transition-all cursor-pointer flex items-center justify-center`}
-                    >
-                      {color.class.includes("text-") && (
-                        <span className="text-[10px] font-bold text-white drop-shadow-md leading-none select-none">T</span>
-                      )}
-                    </button>
-                  ))}
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-gray-800 pb-1.5 mb-0.5">
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider select-none">
+                    Format Selection
+                  </span>
+                  <button 
+                    onClick={removeHighlightForSelection}
+                    className="text-[10px] uppercase tracking-wider font-bold text-red-400 hover:text-red-300 transition-colors flex items-center gap-1 cursor-pointer"
+                    title="Clear current selection highlights"
+                  >
+                    <Eraser size={10} />
+                    <span>Clear</span>
+                  </button>
                 </div>
 
-                <button
-                  onClick={removeHighlightForSelection}
-                  title="Remove Highlight"
-                  className="p-1.5 hover:bg-gray-800 rounded-lg text-red-400 hover:text-red-300 transition-colors cursor-pointer flex items-center gap-1.5 text-xs px-2"
-                >
-                  <Eraser size={13} />
-                  <span className="font-semibold select-none">Remove Highlight</span>
-                </button>
+                {/* Section 1: Predefined Backgrounds */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest text-left select-none">
+                    Background Color Highlight
+                  </span>
+                  <div className="grid grid-cols-8 gap-1.5 justify-items-center">
+                    {[
+                      { label: "Yellow", class: "bg-[#fef08a]" },
+                      { label: "Pink", class: "bg-[#fbcfe8]" },
+                      { label: "Green", class: "bg-[#bbf7d0]" },
+                      { label: "Blue", class: "bg-[#bfdbfe]" },
+                      { label: "Purple", class: "bg-[#e9d5ff]" },
+                      { label: "Orange", class: "bg-[#fed7aa]" },
+                      { label: "Red", class: "bg-[#fecaca]" },
+                      { label: "Slate", class: "bg-[#e2e8f0]" },
+                    ].map((color) => (
+                      <button
+                        key={color.label}
+                        title={color.label}
+                        onClick={() => addHighlight(color.class)}
+                        className={`w-6 h-6 rounded-full ${color.class} hover:scale-125 transition-all border border-white/10 shadow-xs cursor-pointer focus:outline-none flex items-center justify-center`}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Section 2: Predefined Text Styles */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest text-left select-none">
+                    Text Colors (Shorts Style)
+                  </span>
+                  <div className="flex gap-2.5 justify-start">
+                    {[
+                      { label: "Shorts Orange", class: "text-[#e17b35] bg-transparent" },
+                      { label: "Shorts Yellow", class: "text-[#fbbf24] bg-transparent" },
+                      { label: "Shorts Green", class: "text-[#34d399] bg-transparent" },
+                      { label: "Shorts Blue", class: "text-[#60a5fa] bg-transparent" },
+                      { label: "Shorts Pink", class: "text-[#f472b6] bg-transparent" },
+                    ].map((color) => (
+                      <button
+                        key={color.label}
+                        title={color.label}
+                        onClick={() => addHighlight(color.class)}
+                        className="w-6 h-6 rounded-full bg-gray-900 border border-gray-800 hover:scale-125 transition-all cursor-pointer flex items-center justify-center focus:outline-none"
+                      >
+                        <span 
+                          className="text-[10px] font-black select-none leading-none" 
+                          style={{ color: color.class.match(/text-\[([^\]]+)\]/)?.[1] || "#f97316" }}
+                        >
+                          T
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Section 3: Custom Color Tool */}
+                <div className="flex flex-col gap-1.5 border-t border-gray-800 pt-2">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest text-left select-none">
+                    Custom Color Picker
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {/* Compact Interactive Color Element */}
+                    <div className="relative group">
+                      <input 
+                        type="color" 
+                        value={customColor}
+                        onChange={(e) => setCustomColor(e.target.value)}
+                        className="w-8 h-8 rounded-lg border border-gray-700 bg-transparent cursor-pointer p-0 select-none focus:outline-none focus:ring-1 focus:ring-orange-500"
+                        title="Pick custom hue"
+                      />
+                    </div>
+
+                    {/* Segment Control for Text vs Bg */}
+                    <div className="flex-1 bg-gray-900 border border-gray-800 rounded-lg p-0.5 flex">
+                      <button
+                        type="button"
+                        onClick={() => setCustomColorType("bg")}
+                        className={`flex-1 text-[10px] font-bold py-1 px-1.5 rounded transition-all select-none cursor-pointer ${
+                          customColorType === "bg" 
+                            ? "bg-gray-800 text-white shadow-xs" 
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        BG Highlight
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCustomColorType("text")}
+                        className={`flex-1 text-[10px] font-bold py-1 px-1.5 rounded transition-all select-none cursor-pointer ${
+                          customColorType === "text" 
+                            ? "bg-gray-800 text-white shadow-xs" 
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        Text Color
+                      </button>
+                    </div>
+
+                    {/* Action Button */}
+                    <button
+                      onClick={() => {
+                        if (customColorType === "bg") {
+                          addHighlight(`bg-custom:${customColor}`);
+                        } else {
+                          addHighlight(`text-custom:${customColor}`);
+                        }
+                      }}
+                      className="px-2.5 py-1.5 text-[10px] font-bold bg-orange-600 hover:bg-orange-500 active:scale-95 text-white rounded-lg cursor-pointer transition-all flex items-center gap-1 shadow-xs"
+                      title="Apply pick"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
