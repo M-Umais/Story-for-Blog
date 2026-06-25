@@ -288,6 +288,15 @@ export default function App() {
     }
   });
 
+  const [pagePadding, setPagePadding] = useState<{ top: number; bottom: number; left: number; right: number }>(() => {
+    try {
+      const saved = localStorage.getItem("reddit_story_pagePadding_v1");
+      return saved ? JSON.parse(saved) : { top: 40, bottom: 40, left: 40, right: 40 };
+    } catch {
+      return { top: 40, bottom: 40, left: 40, right: 40 };
+    }
+  });
+
   useEffect(() => {
     try {
       localStorage.setItem("reddit_story_page_bold_v2", JSON.stringify(pageBoldOverrides));
@@ -295,6 +304,14 @@ export default function App() {
       console.error(e);
     }
   }, [pageBoldOverrides]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reddit_story_pagePadding_v1", JSON.stringify(pagePadding));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [pagePadding]);
 
   useEffect(() => {
     try {
@@ -684,6 +701,140 @@ export default function App() {
              </div>
           </div>
 
+          {/* Page Padding Controls */}
+          <div className="space-y-3 border-t border-gray-100 pt-4">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                Page Padding Controls
+              </label>
+              <button
+                type="button"
+                onClick={() => setPagePadding({ top: 0, bottom: 0, left: 0, right: 0 })}
+                className="text-[10px] uppercase tracking-wider font-bold text-red-500 hover:text-red-700 transition-colors cursor-pointer"
+              >
+                Remove All Padding
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+              <div className="space-y-1 bg-white p-2 rounded-lg border border-gray-150 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-gray-700">Top</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0"
+                      value={pagePadding.top}
+                      onChange={(e) => setPagePadding(prev => ({ ...prev, top: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-12 px-1 py-0.5 text-[11px] font-mono font-bold text-center bg-gray-50 border border-gray-200 rounded text-orange-600 outline-none focus:ring-1 focus:ring-orange-500"
+                    />
+                    <span className="text-[10px] text-gray-400">px</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="120"
+                  value={Math.min(120, pagePadding.top)}
+                  onChange={(e) => setPagePadding(prev => ({ ...prev, top: parseInt(e.target.value) || 0 }))}
+                  className="w-full accent-orange-600 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1 bg-white p-2 rounded-lg border border-gray-150 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-gray-700">Bottom</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0"
+                      value={pagePadding.bottom}
+                      onChange={(e) => setPagePadding(prev => ({ ...prev, bottom: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-12 px-1 py-0.5 text-[11px] font-mono font-bold text-center bg-gray-50 border border-gray-200 rounded text-orange-600 outline-none focus:ring-1 focus:ring-orange-500"
+                    />
+                    <span className="text-[10px] text-gray-400">px</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="120"
+                  value={Math.min(120, pagePadding.bottom)}
+                  onChange={(e) => setPagePadding(prev => ({ ...prev, bottom: parseInt(e.target.value) || 0 }))}
+                  className="w-full accent-orange-600 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1 bg-white p-2 rounded-lg border border-gray-150 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-gray-700">Left</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0"
+                      value={pagePadding.left}
+                      onChange={(e) => setPagePadding(prev => ({ ...prev, left: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-12 px-1 py-0.5 text-[11px] font-mono font-bold text-center bg-gray-50 border border-gray-200 rounded text-orange-600 outline-none focus:ring-1 focus:ring-orange-500"
+                    />
+                    <span className="text-[10px] text-gray-400">px</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="120"
+                  value={Math.min(120, pagePadding.left)}
+                  onChange={(e) => setPagePadding(prev => ({ ...prev, left: parseInt(e.target.value) || 0 }))}
+                  className="w-full accent-orange-600 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1 bg-white p-2 rounded-lg border border-gray-150 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-gray-700">Right</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0"
+                      value={pagePadding.right}
+                      onChange={(e) => setPagePadding(prev => ({ ...prev, right: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-12 px-1 py-0.5 text-[11px] font-mono font-bold text-center bg-gray-50 border border-gray-200 rounded text-orange-600 outline-none focus:ring-1 focus:ring-orange-500"
+                    />
+                    <span className="text-[10px] text-gray-400">px</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="120"
+                  value={Math.min(120, pagePadding.right)}
+                  onChange={(e) => setPagePadding(prev => ({ ...prev, right: parseInt(e.target.value) || 0 }))}
+                  className="w-full accent-orange-600 cursor-pointer"
+                />
+              </div>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Presets:</span>
+              {[
+                { label: "None", val: 0 },
+                { label: "Compact", val: 20 },
+                { label: "Standard", val: 40 },
+                { label: "Spacious", val: 64 },
+              ].map(preset => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => setPagePadding({ top: preset.val, bottom: preset.val, left: preset.val, right: preset.val })}
+                  className="px-2.5 py-1 text-[10px] font-bold bg-white hover:bg-gray-100 border border-gray-200 rounded-md text-gray-600 cursor-pointer shadow-2xs transition-all active:scale-95"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Highlights Manager */}
           <div className="space-y-2 border-t border-gray-100 pt-5">
             <div className="flex items-center justify-between">
@@ -961,10 +1112,13 @@ export default function App() {
                       <motion.div
                         id={`preview-page-${index}`}
                         data-page-index={index}
-                        className="w-full p-8 md:p-10 bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative shadow-xs"
+                        className="w-full bg-[#f9f9f9] border border-gray-100 select-text cursor-text relative shadow-xs transition-all"
                         style={{
                           backgroundColor: "#f9f9f9",
-                          padding: "2.5rem",
+                          paddingTop: `${pagePadding.top}px`,
+                          paddingBottom: `${pagePadding.bottom}px`,
+                          paddingLeft: `${pagePadding.left}px`,
+                          paddingRight: `${pagePadding.right}px`,
                           border: "1px solid #f3f4f6",
                           borderRadius: "0.5rem",
                           boxSizing: "border-box",
